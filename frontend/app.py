@@ -33,9 +33,9 @@ with st.form("recommendation_form"):
     )
     event_type = st.text_input("Тип мероприятия", placeholder="Например, свадьба")
     contractor_category = st.text_input("Категория подрядчика", placeholder="Например, Фотограф")
-    budget = st.number_input("Бюджет", min_value=0, value=0, step=1000)
+    budget = st.number_input("Бюджет", min_value=0, value=None, step=1000, placeholder="0")
     language = st.text_input("Язык (необязательно)")
-    duration = st.number_input("Длительность в часах (необязательно)", min_value=0, value=0, step=1)
+    duration = st.number_input("Длительность в часах (необязательно)", min_value=0, value=None, step=1, placeholder="0")
     submitted = st.form_submit_button("Найти подрядчиков", type="primary")
 
 if submitted:
