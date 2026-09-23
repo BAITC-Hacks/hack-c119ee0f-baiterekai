@@ -38,14 +38,14 @@ def build_recommendation_payload(
     event_date: str,
     event_type: str,
     contractor_category: str,
-    budget: float,
+    budget: int,
     language: Optional[str] = None,
-    duration: Optional[float] = None,
+    duration: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Build the backend request without adding recommendation logic."""
     payload: Dict[str, Any] = {
         "city": city.strip(),
-        "event_date": event_date,
+        "date": event_date,
         "event_type": event_type.strip(),
         "category": contractor_category.strip(),
         "budget": budget,
@@ -73,7 +73,7 @@ def recommend(payload: Dict[str, Any]) -> RecommendationResponse:
             raw_body = response.read().decode("utf-8")
     except error.HTTPError as exc:
         raw_body = exc.read().decode("utf-8", errors="replace")
-        if exc.code == 400:
+        if exc.code in (400, 422):
             raise APIResponseError(_error_detail(raw_body, "Некорректный запрос."), exc.code) from None
         if exc.code >= 500:
             raise APIResponseError("Сервис рекомендаций временно недоступен.", exc.code) from None
@@ -97,7 +97,7 @@ def recommend(payload: Dict[str, Any]) -> RecommendationResponse:
     if parsed["status"] not in {"found", "category_not_found", "no_match"}:
         raise APIResponseError("Backend вернул неизвестный статус.", status_code)
     if parsed["status"] == "found":
-        recommendations = parsed.get("recommendations", parsed.get("contractors"))
+        recommendations = parsed.get("results")
         if not isinstance(recommendations, list):
             raise APIResponseError("Backend вернул неожиданный список рекомендаций.", status_code)
     return RecommendationResponse(status=parsed["status"], data=parsed)
@@ -112,4 +112,19 @@ def _error_detail(raw_body: str, fallback: str) -> str:
         detail = parsed.get("detail") or parsed.get("message") or parsed.get("error")
         if isinstance(detail, str) and detail.strip():
             return detail.strip()
+        if isinstance(detail, list):
+            messages = []
+            for item in detail:
+                if not isinstance(item, dict):
+                    continue
+                message = item.get("msg")
+                if not isinstance(message, str) or not message.strip():
+                    continue
+                location = item.get("loc", [])
+                field = ".".join(
+                    str(part) for part in location if part != "body"
+                ) if isinstance(location, (list, tuple)) else ""
+                messages.append(f"{field}: {message}" if field else message)
+            if messages:
+                return "; ".join(messages)
     return fallback

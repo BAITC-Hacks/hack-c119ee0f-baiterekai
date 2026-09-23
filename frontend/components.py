@@ -9,7 +9,7 @@ def render_request_summary(payload: Dict[str, Any]) -> None:
     st.subheader("Параметры запроса")
     summary = [
         f"Город: {payload.get('city', '—')}",
-        f"Дата: {payload.get('event_date', '—')}",
+        f"Дата: {payload.get('date', '—')}",
         f"Мероприятие: {payload.get('event_type', '—')}",
         f"Категория: {payload.get('category', '—')}",
         f"Бюджет: {payload.get('budget', '—')}",
@@ -35,7 +35,7 @@ def render_response(response: Dict[str, Any]) -> None:
 
 
 def _render_found(response: Dict[str, Any]) -> None:
-    contractors = response.get("recommendations", response.get("contractors", []))
+    contractors = response.get("results", [])
     if not isinstance(contractors, list):
         st.error("Backend вернул неожиданный список рекомендаций.")
         return
@@ -46,6 +46,12 @@ def _render_found(response: Dict[str, Any]) -> None:
         if not isinstance(contractor, dict):
             continue
         name = contractor.get("name", "Без названия")
+        price = contractor.get("price")
+        price_label = (
+            f"от {price:,} ₸".replace(",", " ")
+            if isinstance(price, (int, float))
+            else None
+        )
         with st.container(border=True):
             title_col, badge_col = st.columns([4, 1])
             title_col.subheader(name)
@@ -57,7 +63,7 @@ def _render_found(response: Dict[str, Any]) -> None:
                     for value in (
                         contractor.get("category"),
                         contractor.get("city"),
-                        contractor.get("price"),
+                        price_label,
                     )
                     if value not in (None, "")
                 )
