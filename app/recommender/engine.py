@@ -7,7 +7,7 @@ from typing import Literal, TypedDict
 
 from app.data.models import Contractor
 from app.recommender.explanations import explain_contractor
-from app.recommender.filters import filter_contractors
+from app.recommender.filters import filter_contractors, normalize_text
 from app.recommender.scoring import rank_contractors
 
 
@@ -122,8 +122,9 @@ def recommend(
     date передаётся строкой YYYY-MM-DD.
     Некорректные параметры запроса вызывают ValueError.
 
-    Значения города, категории, формата и языка сравниваются точно:
-    функция не меняет регистр, пробелы или условия запроса.
+    Город, категория, формат и язык сравниваются без учёта регистра,
+    пробелов по краям и повторяющихся пробелов. В карточках используются
+    исходные названия из каталога.
 
     price содержит числовую стартовую цену в тенге.
     В explanation цена обозначается как «от».
@@ -166,26 +167,45 @@ def recommend(
     )
 
     results: list[RecommendationCard] = []
+    category_key = normalize_text(category)
+    event_key = normalize_text(event_type)
+    language_key = normalize_text(language) if language is not None else None
 
     for item in ranked[:3]:
         contractor = item["contractor"]
+        # Фильтры уже проверили наличие этих значений в профиле.
+        matched_category = next(
+            value for value in contractor["categories"]
+            if normalize_text(value) == category_key
+        )
+        matched_event = next(
+            value for value in contractor["event_formats"]
+            if normalize_text(value) == event_key
+        )
+        matched_language = (
+            next(
+                value for value in contractor["languages"]
+                if normalize_text(value) == language_key
+            )
+            if language_key is not None else None
+        )
 
         results.append(
             {
                 "id": contractor["id"],
                 "name": contractor["anon_name"],
-                "category": category,
+                "category": matched_category,
                 "city": contractor["city"],
                 "price": contractor["price_from_kzt"],
                 "score": item["score"],
                 "explanation": explain_contractor(
                     contractor=contractor,
-                    city=city,
+                    city=contractor["city"],
                     date=date,
-                    event_type=event_type,
-                    category=category,
+                    event_type=matched_event,
+                    category=matched_category,
                     budget=budget,
-                    language=language,
+                    language=matched_language,
                     duration=duration,
                 ),
             }

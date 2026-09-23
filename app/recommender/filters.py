@@ -12,6 +12,11 @@ class FilterResult(TypedDict):
     rejection_summary: dict[str, int]
 
 
+def normalize_text(value: str) -> str:
+    """Получить ключ сравнения без изменения исходного значения."""
+    return " ".join(value.split()).casefold()
+
+
 def filter_contractors(
     contractors: Iterable[Contractor],
     city: str,
@@ -28,6 +33,10 @@ def filter_contractors(
     Каждый исключённый профиль учитывается по первой причине отказа.
     Порядок прошедших кандидатов сохраняется; исходные записи не меняются.
     """
+    city_key = normalize_text(city)
+    category_key = normalize_text(category)
+    event_key = normalize_text(event_type)
+    language_key = normalize_text(language) if language is not None else None
     candidates: list[Contractor] = []
     city_category_count = 0
     rejection_summary: dict[str, int] = {
@@ -41,11 +50,11 @@ def filter_contractors(
     }
 
     for contractor in contractors:
-        if contractor["city"] != city:
+        if normalize_text(contractor["city"]) != city_key:
             rejection_summary["city"] += 1
             continue
 
-        if category not in contractor["categories"]:
+        if not any(normalize_text(value) == category_key for value in contractor["categories"]):
             rejection_summary["category"] += 1
             continue
 
@@ -59,11 +68,13 @@ def filter_contractors(
             rejection_summary["budget"] += 1
             continue
 
-        if event_type not in contractor["event_formats"]:
+        if not any(normalize_text(value) == event_key for value in contractor["event_formats"]):
             rejection_summary["event_format"] += 1
             continue
 
-        if language is not None and language not in contractor["languages"]:
+        if language_key is not None and not any(
+            normalize_text(value) == language_key for value in contractor["languages"]
+        ):
             rejection_summary["language"] += 1
             continue
 

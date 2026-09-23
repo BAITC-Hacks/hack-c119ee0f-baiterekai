@@ -1,7 +1,9 @@
-"""CSV loader tests; optional real catalogue path: CONTRACTORS_CSV_PATH."""
+"""Loader and recommendation tests; real catalogue path: CONTRACTORS_CSV_PATH."""
 
+from copy import deepcopy
 import csv
 import hashlib
+from itertools import permutations, product
 import os
 from pathlib import Path
 import subprocess
@@ -10,6 +12,8 @@ import tempfile
 import unittest
 
 from app.data import loader
+from app.recommender.engine import recommend
+from app.recommender.filters import filter_contractors
 
 
 FIELDS = [
@@ -210,6 +214,149 @@ class LoaderTests(unittest.TestCase):
             for field in ("synthetic", "city_imputed", "price_imputed"):
                 self.assertIsInstance(normalized[field], bool)
         self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), before)
+
+
+class TextMatchingTests(unittest.TestCase):
+    def setUp(self):
+        self.query = dict(
+            city="Алматы", date="2026-10-01", event_type="Свадьба",
+            category="Фотограф", budget=500, language="Русский", duration=4,
+        )
+
+    @staticmethod
+    def contractor(identifier="one", **changes):
+        record = dict(
+            id=identifier, anon_name="Тестовый профиль", city="Алматы",
+            categories=["Фотограф", "Флорист"], price_from_kzt=500,
+            event_formats=["Свадьба", "День рождения"], languages=["Русский"],
+            max_hours=4, busy_dates=[], description="Снимаю свадебные церемонии.",
+            synthetic=True, city_imputed=False, price_imputed=False,
+        )
+        record.update(changes)
+        return record
+
+    def assert_variants(self, field, variants):
+        rows = [self.contractor()]
+        baseline_query = self.query | {field: variants[0]}
+        expected = recommend(rows, **baseline_query)
+        self.assertEqual(expected["status"], "found")
+        expected_filter = filter_contractors(rows, **baseline_query)
+        for value in variants:
+            with self.subTest(field=field, value=value):
+                query = self.query | {field: value}
+                self.assertEqual(filter_contractors(rows, **query), expected_filter)
+                self.assertEqual(recommend(rows, **query), expected)
+
+    def test_city_case_variants(self):
+        self.assert_variants("city", ("Алматы", "алматы", "АЛМАТЫ", "аЛмАтЫ"))
+
+    def test_category_case_variants(self):
+        self.assert_variants("category", ("Фотограф", "фотограф", "ФОТОГРАФ", "ФоТоГрАф"))
+        self.assert_variants("category", ("Флорист", "флорист", "ФЛОРИСТ", "ФлОрИсТ"))
+
+    def test_event_case_variants(self):
+        self.assert_variants("event_type", ("Свадьба", "свадьба", "СВАДЬБА", "сВаДьБа"))
+
+    def test_language_case_variants(self):
+        self.assert_variants("language", ("Русский", "русский", "РУССКИЙ", "рУсСкИй"))
+
+    def test_whitespace_on_both_sides_of_all_comparisons(self):
+        rows = [self.contractor(
+            city="  Нур\tСултан ", categories=["Другая", " Ведущий  церемонии "],
+            event_formats=[" День\nрождения "], languages=[" Русский\u00a0язык "],
+        )]
+        query = self.query | dict(
+            city="нур  султан", category="ВЕДУЩИЙ\tЦЕРЕМОНИИ",
+            event_type="\tДЕНЬ  РОЖДЕНИЯ\n", language="РУССКИЙ   ЯЗЫК",
+        )
+        original = deepcopy(rows)
+        result = recommend(rows, **query)
+        self.assertEqual(result["status"], "found")
+        self.assertEqual(result["results"][0]["category"], " Ведущий  церемонии ")
+        self.assertEqual(result["results"][0]["city"], "  Нур\tСултан ")
+        self.assertEqual(rows, original)
+
+    def test_unicode_casefold_not_only_lower(self):
+        # Artificial values distinguish Unicode casefold from lower in every field.
+        rows = [self.contractor(
+            city="Straße", categories=["Straße"], event_formats=["Straße"], languages=["Straße"],
+        )]
+        query = self.query | dict(city="STRASSE", category="STRASSE", event_type="STRASSE", language="STRASSE")
+        self.assertEqual(recommend(rows, **query)["status"], "found")
+
+    def test_no_fuzzy_search_or_internal_space_removal(self):
+        cases = (
+            ("city", "Алмты", "category_not_found"),
+            ("city", "Ал маты", "category_not_found"),
+            ("category", "Фотогра", "category_not_found"),
+            ("event_type", "Свадба", "no_match"),
+            ("language", "Русккий", "no_match"),
+        )
+        for field, value, status in cases:
+            with self.subTest(field=field, value=value):
+                self.assertEqual(recommend([self.contractor()], **(self.query | {field: value}))["status"], status)
+
+    def test_first_rejection_order_is_preserved(self):
+        bad = dict(busy_dates=[self.query["date"]], price_from_kzt=501, event_formats=[], languages=[], max_hours=3)
+        rows = [
+            self.contractor("city", city="Астана", categories=[], **bad),
+            self.contractor("category", categories=[], **bad),
+            self.contractor("busy", **bad),
+            self.contractor("budget", **(bad | {"busy_dates": []})),
+            self.contractor("event", event_formats=[], languages=[], max_hours=3),
+            self.contractor("language", languages=[], max_hours=3),
+            self.contractor("duration", max_hours=3),
+            self.contractor("passed"),
+        ]
+        query = self.query | dict(city=" АЛМАТЫ ", category="фотограф", event_type="свадьба", language="РУССКИЙ")
+        result = filter_contractors(rows, **query)
+        self.assertEqual(result["city_category_count"], 6)
+        self.assertEqual([r["id"] for r in result["candidates"]], ["passed"])
+        self.assertEqual(result["rejection_summary"], {
+            "city": 1, "category": 1, "busy": 1, "budget": 1,
+            "event_format": 1, "language": 1, "duration": 1,
+        })
+
+    def test_optional_language_duration_and_numeric_boundaries(self):
+        query = self.query | dict(city="алматы", category="фотограф", event_type="свадьба", language="русский")
+        self.assertEqual(recommend([self.contractor()], **query)["status"], "found")
+        self.assertEqual(recommend([self.contractor(max_hours=None)], **(query | {"duration": 24}))["status"], "found")
+        self.assertEqual(recommend([self.contractor(languages=[])], **(query | {"language": None, "duration": None}))["status"], "found")
+
+    def test_normalization_does_not_mutate_records_or_request(self):
+        rows = [self.contractor()]
+        query = self.query | dict(city=" АЛМАТЫ ", category=" фотограф ", event_type=" СВАДЬБА ", language=" русский ")
+        original_rows, original_query = deepcopy(rows), deepcopy(query)
+        self.assertEqual(recommend(rows, **query)["status"], "found")
+        self.assertEqual(rows, original_rows)
+        self.assertEqual(query, original_query)
+
+    def test_full_response_and_tie_break_stable_for_case_and_input_order(self):
+        rows = [self.contractor("Z"), self.contractor("B"), self.contractor("A"), self.contractor("C", price_from_kzt=250)]
+        baseline = recommend(rows, **self.query)
+        self.assertEqual([r["id"] for r in baseline["results"]], ["C", "A", "B"])
+        self.assertEqual(baseline["count"], 3)
+        changed = self.query | dict(city=" АЛМАТЫ ", category=" фотограф ", event_type=" СВАДЬБА ", language=" русский ")
+        for ordering in permutations(rows):
+            self.assertEqual(recommend(ordering, **changed), baseline)
+
+    def test_real_catalogue_all_case_combinations(self):
+        path = Path(__file__).resolve().parents[1] / "data" / "contractors.csv"
+        original_bytes = path.read_bytes()
+        rows = loader.load_contractors(path)
+        original_rows = deepcopy(rows)
+        for category in ("Фотограф", "Флорист"):
+            query = dict(city="Алматы", date="2026-09-23", category=category,
+                         event_type="свадьба", budget=2000000, language="русский", duration=None)
+            expected = recommend(rows, **query)
+            self.assertEqual(expected["status"], "found")
+            fields = ("city", "category", "event_type", "language")
+            variants = [(query[f], query[f].upper(), query[f].swapcase(), "\t " + query[f].upper() + "  ") for f in fields]
+            for values in product(*variants):
+                with self.subTest(category=category, values=values):
+                    self.assertEqual(recommend(rows, **(query | dict(zip(fields, values)))), expected)
+        self.assertEqual(rows, original_rows)
+        self.assertEqual(path.read_bytes(), original_bytes)
 
 
 if __name__ == "__main__":
