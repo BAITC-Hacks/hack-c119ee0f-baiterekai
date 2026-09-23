@@ -14,6 +14,10 @@ from api_client import (
 from components import render_request_summary, render_response
 
 
+CALENDAR_START = date(2026, 9, 23)
+CALENDAR_END = date(2026, 12, 31)
+
+
 st.set_page_config(page_title="BaiterekAI", page_icon="🤝", layout="centered")
 
 st.title("BaiterekAI")
@@ -21,12 +25,17 @@ st.caption("Подбор подрядчиков для вашего меропр
 
 with st.form("recommendation_form"):
     city = st.text_input("Город", placeholder="Например, Алматы")
-    event_date = st.date_input("Дата мероприятия", value=date.today())
+    event_date = st.date_input(
+        "Дата мероприятия",
+        value=min(max(date.today(), CALENDAR_START), CALENDAR_END),
+        min_value=CALENDAR_START,
+        max_value=CALENDAR_END,
+    )
     event_type = st.text_input("Тип мероприятия", placeholder="Например, свадьба")
-    contractor_category = st.text_input("Категория подрядчика", placeholder="Например, фотограф")
-    budget = st.number_input("Бюджет", min_value=0.0, value=0.0, step=1000.0)
+    contractor_category = st.text_input("Категория подрядчика", placeholder="Например, Фотограф")
+    budget = st.number_input("Бюджет", min_value=0, value=0, step=1000)
     language = st.text_input("Язык (необязательно)")
-    duration = st.number_input("Длительность в часах (необязательно)", min_value=0.0, value=0.0, step=0.5)
+    duration = st.number_input("Длительность в часах (необязательно)", min_value=0, value=0, step=1)
     submitted = st.form_submit_button("Найти подрядчиков", type="primary")
 
 if submitted:
